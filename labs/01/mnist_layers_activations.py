@@ -49,9 +49,41 @@ def main(args: argparse.Namespace) -> dict[str, float]:
     train = torch.utils.data.DataLoader(Dataset(mnist.train), batch_size=args.batch_size, shuffle=True)
     dev = torch.utils.data.DataLoader(Dataset(mnist.dev), batch_size=args.batch_size)
 
-    # Create the model.
-    model = torch.nn.Sequential()
+    def get_activation_layer(name):
+        if name == "none":
+            return torch.nn.Identity()
+        elif name == "relu":
+            return torch.nn.ReLU()
+        elif name == "tanh":
+            return torch.nn.Tanh()
+        elif name == "sigmoid":
+            return torch.nn.Sigmoid()
+        else:
+            raise ValueError(f"Unknown activation '{name}'")
+    
+        
+    def get_layers(hidden_layers_count: int):
+        layers = []
+        activation_layer = get_activation_layer(args.activation)
+        
+        if hidden_layers_count == 0:
+            layers.append(torch.nn.Linear(MNIST.H * MNIST.W, MNIST.LABELS))    
+            return layers
+        
+        layers.append(torch.nn.Linear(MNIST.C * MNIST.H * MNIST.W, args.hidden_layer_size))
+        layers.append(activation_layer)
 
+
+        for i in range(hidden_layers_count-1):
+            layers.append(torch.nn.Linear(args.hidden_layer_size, args.hidden_layer_size))
+            layers.append(activation_layer) 
+        layers.append(torch.nn.Linear(args.hidden_layer_size, MNIST.LABELS)) #konec vystup je 10 kategorii
+        return layers
+            
+    layers = get_layers(args.hidden_layers)
+
+    model = torch.nn.Sequential(torch.nn.Flatten(), *layers,)
+            
     # TODO: Finish the model. Namely:
     # - start by adding the `torch.nn.Flatten()` layer;
     # - then add `args.hidden_layers` number of fully connected hidden layers

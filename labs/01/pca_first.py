@@ -32,7 +32,8 @@ def main(args: argparse.Namespace) -> tuple[float, float]:
     # We want to reshape it to [args.examples, MNIST.C * MNIST.H * MNIST.W].
     # We can do so using `torch.reshape(data, new_shape)` with new shape
     # `[data.shape[0], data.shape[1] * data.shape[2] * data.shape[3]]`.
-    data = ...
+    data = torch.reshape(data, (data.shape[0], data.shape[1] * data.shape[2] * data.shape[3]))
+
 
     # TODO: Now compute mean of every feature. Use `torch.mean`, and set
     # `dim` (or `axis`) argument to zero -- therefore, the mean will be
@@ -40,23 +41,33 @@ def main(args: argparse.Namespace) -> tuple[float, float]:
     #
     # Note that for compatibility with Numpy/TF/Keras, all `dim` arguments
     # in PyTorch can be also called `axis`.
-    mean = ...
+    mean = torch.mean(data, dim=0)
 
     # TODO: Compute the covariance matrix. The covariance matrix is
     #   (data - mean)^T @ (data - mean) / data.shape[0]
     # where transpose can be computed using `torch.transpose` or `torch.t` and
     # matrix multiplication using either Python operator @ or `torch.matmul`.
-    cov = ...
+    transposed_matrix = torch.transpose(data - mean, 0, 1)
+    citatel = transposed_matrix @ (data - mean)
+
+    
+    covariance_matrix = citatel / data.shape[0]
 
     # TODO: Compute the total variance, which is the sum of the diagonal
     # of the covariance matrix. To extract the diagonal use `torch.diagonal`,
     # and to sum a tensor use `torch.sum`.
-    total_variance = ...
+    diagonal = torch.diagonal(covariance_matrix)
+    
+    total_variance = torch.sum(diagonal)
 
     # TODO: Now run `args.iterations` of the power iteration algorithm.
     # Start with a vector of `cov.shape[0]` ones of type `torch.float32` using `torch.ones`.
-    v = ...
+    v = torch.ones(covariance_matrix.shape[0])
     for i in range(args.iterations):
+
+        v = torch.mv(covariance_matrix, v)
+        s = torch.linalg.vector_norm(v)
+        v = v / s
         # TODO: In the power iteration algorithm, we compute
         # 1. v = cov v
         #    The matrix-vector multiplication can be computed as regular matrix multiplication
