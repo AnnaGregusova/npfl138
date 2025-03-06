@@ -64,6 +64,9 @@ class Model(npfl138.TrainableModule):
         # TODO: Create the model layers, with the last layer having 2 outputs.
         # To store a list of layers, you can use either `torch.nn.Sequential`
         # or `torch.nn.ModuleList`; you should *not* use a Python list.
+        model = torch.nn.Sequential(
+
+
         ...
 
     def forward(self, inputs: torch.Tensor) -> torch.Tensor:
