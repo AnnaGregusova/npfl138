@@ -7,7 +7,7 @@ import argparse
 import json
 import os
 import sys
-from typing import Literal, Protocol, TextIO, TypeAlias
+from typing import Literal, Protocol, TextIO, TypeAlias, TypeVar
 
 import numpy as np
 import torch
@@ -16,6 +16,8 @@ Tensor: TypeAlias = torch.Tensor | torch.nn.utils.rnn.PackedSequence
 TensorOrTensors: TypeAlias = Tensor | tuple[Tensor, ...] | list[Tensor]
 
 Logs: TypeAlias = dict[str, float]
+
+Self: TypeVar = TypeVar("Self", bound="TrainableModule")
 
 
 class LossProtocol(Protocol):
@@ -33,7 +35,7 @@ class MetricProtocol(Protocol):
 
 
 class CallbackProtocol(Protocol):
-    def __call__(self, module: "TrainableModule", epoch: int, logs: Logs) -> None:
+    def __call__(self, module: "TrainableModule", epoch: int, logs: Logs) -> Literal["stop_training"] | None:
         ...
 
 
@@ -106,8 +108,8 @@ def get_auto_device() -> torch.device:
 class LossTracker(torch.nn.Module):
     def __init__(self):
         super().__init__()
-        self.register_buffer("total", torch.tensor(0.0, dtype=torch.float32))
-        self.register_buffer("count", torch.tensor(0, dtype=torch.int64))
+        self.register_buffer("total", torch.tensor(0.0, dtype=torch.float32), persistent=False)
+        self.register_buffer("count", torch.tensor(0, dtype=torch.int64), persistent=False)
 
     def reset(self):
         self.total.zero_()
@@ -136,7 +138,9 @@ class TrainableModule(torch.nn.Module):
     from time import time as _time
     from tqdm import tqdm as _tqdm
 
-    def __init__(self, module: torch.nn.Module | None = None):
+    STOP_TRAINING: Literal["stop_training"] = "stop_training"
+
+    def __init__(self, module: torch.nn.Module | None = None, device: torch.device | str | None = None):
         """Initialize the module, optionally with an existing PyTorch module.
 
         The `module` argument is useful when you want to wrap an existing
@@ -148,6 +152,10 @@ class TrainableModule(torch.nn.Module):
         if module is not None:
             self.module = module
             self.forward = self._call_wrapped_module
+            self.device = get_auto_device() if device == "auto" or device is None else torch.device(device)
+            self.to(self.device)
+        else:
+            assert device is None, "The device cannot be set without a module; use configure or load_weights."
 
     def _call_wrapped_module(self, inputs):
         return self.module(inputs)
@@ -162,7 +170,7 @@ class TrainableModule(torch.nn.Module):
         initial_epoch: int | KeepPrevious = keep_previous,
         logdir: str | None | KeepPrevious = keep_previous,
         device: torch.device | str | Literal["auto"] | KeepPrevious = keep_previous,
-    ) -> None:
+    ) -> Self:
         """Configure the module fitting, evaluation, and placement.
 
         The method can be called multiple times, preserving previously set values by default.
@@ -190,24 +198,22 @@ class TrainableModule(torch.nn.Module):
         if device is not keep_previous or not self.device:
             self.device = get_auto_device() if device == "auto" or device is keep_previous else torch.device(device)
         self.to(self.device)
+        return self
 
-    def unconfigure(self) -> None:
+    def unconfigure(self) -> Self:
         """Remove all training configuration of the TrainableModule."""
         self.optimizer, self.scheduler, self.epoch = None, None, None
         self.loss, self.loss_tracker, self.metrics = None, None, None
         self.logdir, self._log_file, self._tb_writers = None, None, None
+        return self
 
-    def save_weights(self, path: str, optimizer_path: str | None = None) -> None:
+    def save_weights(self, path: str, optimizer_path: str | None = None) -> Self:
         """Save the model weights to the given path.
 
         If optimizer_path is given, the optimizer state is also saved,
         to a separate checkpoint, relative to the model weights path.
         """
-        # Do not save the loss_tracker state and the metric states.
-        loss_tracker, metrics = self.loss_tracker, self.metrics
-        self.loss_tracker, self.metrics = None, None
         state_dict = self.state_dict()
-        self.loss_tracker, self.metrics = loss_tracker, metrics
         os.path.dirname(path) and os.makedirs(os.path.dirname(path), exist_ok=True)
         torch.save(state_dict, path)
 
@@ -219,9 +225,10 @@ class TrainableModule(torch.nn.Module):
             optimizer_path = os.path.join(os.path.dirname(path), optimizer_path)
             os.path.dirname(optimizer_path) and os.makedirs(os.path.dirname(optimizer_path), exist_ok=True)
             torch.save(optimizer_state, optimizer_path)
+        return self
 
     def load_weights(self, path: str, optimizer_path: str | None = None,
-                     device: torch.device | str | Literal["auto"] | KeepPrevious = keep_previous) -> None:
+                     device: torch.device | str | Literal["auto"] | KeepPrevious = keep_previous) -> Self:
         """Load the model weights from the given path.
 
         If the optimizer_path is given, the optimizer state is also loaded,
@@ -231,11 +238,7 @@ class TrainableModule(torch.nn.Module):
         """
         if device is not keep_previous or not self.device:
             self.device = get_auto_device() if device == "auto" or device is keep_previous else torch.device(device)
-        # Do not load the loss_tracker state and the metric states.
-        loss_tracker, metrics = self.loss_tracker, self.metrics
-        self.loss_tracker, self.metrics = None, None
         self.load_state_dict(torch.load(path, map_location=self.device))
-        self.loss_tracker, self.metrics = loss_tracker, metrics
 
         # Load the number of epochs, optimizer state, and the scheduler state when requested.
         if optimizer_path is not None:
@@ -253,6 +256,7 @@ class TrainableModule(torch.nn.Module):
             else:
                 assert "scheduler" not in optimizer_state, "The scheduler state is present, but there is no scheduler."
         self.to(self.device)
+        return self
 
     @staticmethod
     def save_config(path: str, config: dict = {}, /, **kwargs: dict) -> None:
@@ -278,9 +282,11 @@ class TrainableModule(torch.nn.Module):
     def fit(
         self,
         dataloader: torch.utils.data.DataLoader,
+        *,
         epochs: int,
         dev: torch.utils.data.DataLoader | None = None,
         callbacks: list[CallbackProtocol] = [],
+        log_graph: bool = False,
         console: int = console_default(2),
     ) -> Logs:
         """Train the model on the given dataset.
@@ -291,14 +297,18 @@ class TrainableModule(torch.nn.Module):
         - `epochs` is the number of epochs to train;
         - `dev` is an optional development dataset;
         - `callbacks` is a list of callbacks to call after every epoch, each implementing
-          the CallbackProtocol with arguments `self`, `epoch`, and `logs`;
+          the CallbackProtocol with arguments `self`, `epoch`, and `logs`, possibly returning
+          `TrainableModule.STOP_TRAINING` to stop the training (note that the module is set
+          to evaluation mode before calling each callback);
+        - `log_graph` controls whether to log the model graph to TensorBoard;
         - `console` controls the console verbosity: 0 for silent, 1 for epoch logs, 2 for
           additional only-when-writing-to-console progress bar, 3 for persistent progress bar.
         The method returns a dictionary of logs from the training and optionally dev evaluation,
         and sets the model to evaluation mode after training.
         """
-        logs, epochs = {}, self.epoch + epochs
-        while self.epoch < epochs:
+        assert self.loss_tracker is not None, "The TrainableModule has not been configured, run configure first."
+        logs, epochs, stop_training = {}, self.epoch + epochs, False
+        while self.epoch < epochs and not stop_training:
             self.epoch += 1
             self.train()
             self.loss_tracker.reset()
@@ -312,15 +322,16 @@ class TrainableModule(torch.nn.Module):
                 xs, y = validate_batch_input_output(batch)
                 xs = tuple(x.to(self.device) for x in (xs if is_sequence(xs) else (xs,)))
                 y = tuple(y_.to(self.device) for y_ in y) if is_sequence(y) else y.to(self.device)
+                log_graph = log_graph and self.log_graph(xs) and False
                 logs = self.train_step(xs, y)
                 if not data_and_progress.disable:
                     logs_message = " ".join([f"{k}={v:#.{0<abs(v)<2e-4 and '2e' or '4f'}}" for k, v in logs.items()])
                     data_and_progress.set_description(f"{epoch_message} {logs_message}", refresh=False)
             logs = {f"train_{k}": v for k, v in logs.items()}
             if dev is not None:
-                logs |= {f"dev_{k}": v for k, v in self.evaluate(dev, log_as=None).items()}
+                logs |= {f"dev_{k}": v for k, v in self.eval().evaluate(dev, log_as=None).items()}
             for callback in callbacks:
-                callback(self, self.epoch, logs)
+                stop_training = callback(self.eval(), self.epoch, logs) == self.STOP_TRAINING or stop_training
             self.log_metrics(logs, epochs, self._time() - start, console)
         self.eval()
         return logs
@@ -351,6 +362,7 @@ class TrainableModule(torch.nn.Module):
     def evaluate(
         self,
         dataloader: torch.utils.data.DataLoader,
+        *,
         log_as: str | None = "test",
         callbacks: list[CallbackProtocol] = [],
         console: int = console_default(1),
@@ -364,6 +376,7 @@ class TrainableModule(torch.nn.Module):
           arguments `self`, `epoch`, and `logs`;
         - `console` controls the console verbosity: 0 for silent, 1 for a single message.
         """
+        assert self.loss_tracker is not None, "The TrainableModule has not been configured, run configure first."
         self.eval()
         self.loss_tracker.reset()
         for metric in self.metrics.values():
@@ -389,6 +402,7 @@ class TrainableModule(torch.nn.Module):
     def predict(
         self,
         dataloader: torch.utils.data.DataLoader,
+        *,
         data_with_labels: bool = False,
         as_numpy: bool = True,
     ) -> list[torch.Tensor | tuple[torch.Tensor, ...] | np.ndarray | tuple[np.ndarray, ...]]:
@@ -406,6 +420,7 @@ class TrainableModule(torch.nn.Module):
         of the individual examples. Note that if the input was padded, so
         will be the predictions, which will then need to be trimmed.
         """
+        assert self.device is not None, "No device has been set for the TrainableModule, run configure first."
         self.eval()
         predictions = []
         for batch in dataloader:
@@ -425,20 +440,22 @@ class TrainableModule(torch.nn.Module):
 
     def log_metrics(
         self, logs: Logs, epochs: int | None = None, elapsed: float | None = None, console: int = console_default(1),
-    ) -> None:
+    ) -> Self:
         """Log the given dictionary to file logs, TensorBoard logs, and optionally the console."""
         if self.logdir is not None:
+            writers = {}
             for key, value in logs.items():
-                writer, metric = key.split("_", maxsplit=1)
-                self.get_tb_writer(writer).add_scalar(metric, value, self.epoch)
-            for writer in dict.fromkeys(key.split("_", maxsplit=1)[0] for key in logs):
-                self.get_tb_writer(writer).flush()
+                writer, metric = key.split("_", maxsplit=1) if "_" in key else ("train", key)
+                writers.setdefault(writer, self.get_tb_writer(writer)).add_scalar(metric, value, self.epoch)
+            for writer in writers.values():
+                writer.flush()
         for file in ([self.get_log_file()] if self.logdir is not None else []) + [sys.stdout] * bool(console):
             print(f"Epoch {self.epoch}" + (f"/{epochs}" if epochs is not None else ""),
                   *[f"{elapsed:.1f}s"] if elapsed is not None else [],
                   *[f"{k}={v:#.{0<abs(v)<2e-4 and '2e' or '4f'}}" for k, v in logs.items()], file=file, flush=True)
+        return self
 
-    def log_config(self, config: dict, sort_keys: bool = True, console: int = console_default(1)) -> None:
+    def log_config(self, config: dict, sort_keys: bool = True, console: int = console_default(1)) -> Self:
         """Log the given dictionary to the file logs, TensorBoard logs, and optionally the console."""
         if self.logdir is not None:
             config = dict(sorted(config.items())) if sort_keys else config
@@ -447,8 +464,9 @@ class TrainableModule(torch.nn.Module):
             writer.flush()
         for file in ([self.get_log_file()] if self.logdir is not None else []) + [sys.stdout] * bool(console):
             print("Config", f"epoch={self.epoch}", *[f"{k}={v}" for k, v in config.items()], file=file, flush=True)
+        return self
 
-    def log_graph(self, data: torch.utils.data.DataLoader | TensorOrTensors, data_with_labels: bool = False) -> None:
+    def log_graph(self, data: torch.utils.data.DataLoader | TensorOrTensors, data_with_labels: bool = False) -> Self:
         """Log the traced module as a graph to the TensorBoard logs.
 
         Tracing requires an example batch; either the first batch from the
@@ -460,10 +478,11 @@ class TrainableModule(torch.nn.Module):
         if self.logdir is not None:
             batch = next(iter(data)) if isinstance(data, torch.utils.data.DataLoader) else data
             xs = validate_batch_input(batch, with_labels=data_with_labels)
-            xs = tuple(x.to(self.device) for x in xs) if is_sequence(xs) else xs.to(self.device)
+            xs = tuple(x.to(self.device) for x in (xs if is_sequence(xs) else (xs,)))
             writer = self.get_tb_writer("train")
             writer.add_graph(self, xs)
             writer.flush()
+        return self
 
     def get_log_file(self) -> TextIO:
         assert self.logdir is not None, "Cannot use get_log_file when logdir is not set."
