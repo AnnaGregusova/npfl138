@@ -38,3 +38,60 @@
 - Write down the Adam algorithm. Then show why the bias-correction terms
   $(1-\beta^t)$ make the estimation of the first and second moment unbiased.
   [10]
+
+#### Questions@:, Lecture 3 Questions
+- Considering a neural network with $D$ input neurons, a single ReLU hidden
+  layer with $H$ units and softmax output layer with $K$ units, write down the
+  explicit formulas (i.e., without differential operators) of the gradient of
+  all the MLP parameters (two weight matrices and two bias vectors), assuming
+  input $\boldsymbol x$, target $g$ and negative log likelihood loss. [10]
+
+- Assume a network with MSE loss generated a single output $o \in \mathbb{R}$,
+  and the target output is $g$. What is the value of the loss function itself,
+  and what is the explicit formula (i.e., without a differential operator) of
+  the gradient of the loss function with respect to $o$? [5]
+
+- Assume a binary-classification network with cross-entropy loss generated a single output
+  $z \in \mathbb{R}$, which is passed through the sigmoid output activation
+  function, producing $o = \sigma(z)$. If the target output is $g$, what is the value
+  of the loss function itself, and what is the explicit formula (i.e., without
+  a differential operator) of the gradient of the loss function with respect to
+  $z$? [5]
+
+- Assume a $K$-class-classification network with cross-entropy loss generated a $K$-element output
+  $\boldsymbol z \in \mathbb{R}^K$, which is passed through the softmax output
+  activation function, producing $\boldsymbol o=\operatorname{softmax}(\boldsymbol z)$.
+  If the target distribution is $\boldsymbol g$, what is the value of the loss
+  function itself, and what is the explicit formula (i.e., without a differential
+  operator) of the gradient of the loss function with respect to $\boldsymbol z$? [5]
+
+- Define $L_2$ regularization and describe its effect both on the value of the
+  loss function and on the value of the loss function gradient. [5]
+
+- Describe the dropout method and write down exactly how it is used during training and
+  during inference. [5]
+
+- Describe how label smoothing works for cross-entropy loss, both for sigmoid
+  and softmax activations. [5]
+
+- How are weights and biases initialized using the Glorot initialization? [5]
+
+#### Questions@:, Lecture 4 Questions
+- Write down the equation of how convolution of a given image is computed.
+  Assume the input is an image $I$ of size $H \times W$ with $C$ channels, the
+  kernel $K$ has size $N \times M$, the stride is $T \times S$, the operation
+  performed is in fact cross-correlation (as usual in convolutional neural
+  networks) and that $O$ output channels are computed. [5]
+
+- Explain both `SAME` and `VALID` padding schemes and write down the output
+  size of a convolutional operation with an $N \times M$ kernel on image
+  of size $H \times W$ for both these padding schemes (stride is 1). [5]
+
+- Describe batch normalization including all its parameters, and write down an
+  algorithm how it is used during training and the algorithm how it is used
+  during inference. Be sure to explicitly write over what is being normalized in
+  case of fully connected layers and in case of convolutional layers. [10]
+
+- Describe overall architecture of VGG-19 (you do not need to remember the exact
+  number of layers/filters, but you should describe the overall order and type
+  of layers that are used). [5]
